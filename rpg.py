@@ -28,6 +28,8 @@ import sys
 import database
 
 class GameObject:
+    """The base class for all objects in the game world."""
+    def __init__(self, name="Object", symbol='?', x=0, y=0, z=0, health=100, speed=1, visible=True, solid=True, defense=0, state=None):
     """The base class for all entities in the game world.
 
     This class provides fundamental attributes and methods for any object that
@@ -58,6 +60,9 @@ class GameObject:
         self.health = health
         self.max_health = health
         self.defense = defense
+        self.attributes = {}  # Dictionary for storing additional attributes.
+        self.status_effects = {}  # e.g., {'sleep': 6, 'slow': 8}
+        self.state = state # e.g., 'normal', 'hostile', 'dead'
         self.status_effects = {}
 
     def __repr__(self):
@@ -85,6 +90,28 @@ class GameObject:
     def move(self, dx, dy):
         """Updates the object's position by a given delta.
 
+    def move(self, dx, dy, dz=0, in_fluid_fracture=False):
+        """
+        Updates the object's position. Added logic for movement
+        in the Ginga-required 'fluid dimensional fractures.'
+        """
+        if in_fluid_fracture and hasattr(self, 'is_ginga_ready') and not self.is_ginga_ready:
+            # Rigidity in a fluid zone causes catastrophic consequences!
+            damage = 50
+            print(f"!!! WARNING: {self.name} is rigid in a fluid fracture!")
+            self.take_damage(damage)
+            return # Blocked movement due to rigidity
+
+        # Normal, safe movement occurs if not in a fracture, or if Ginga-ready
+        self.x += dx * self.speed
+        self.y += dy * self.speed
+        self.z += dz * self.speed
+
+        # If successfully moving through the fracture, there's an energy cost.
+        if in_fluid_fracture and hasattr(self, 'mana'):
+            self.mana = max(0, self.mana - 5)
+            # This makes Ginga-Stance a resource-management challenge!
+        print(f"{self.name} moved to ({self.x}, {self.y}, {self.z}).")
         Args:
             dx (int): The change in the x-coordinate. A positive value moves
                 the object right, and a negative value moves it left.
@@ -183,6 +210,44 @@ class Interactable(GameObject):
     def on_examine(self):
         """Returns the object's description.
 
+    def to_dict(self):
+        data = super().to_dict()
+        data["description"] = self.description
+        return data
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            name=data.get("name"),
+            symbol=data.get("symbol"),
+            x=data.get("x"),
+            y=data.get("y"),
+            description=data.get("description"),
+        )
+
+class Player(Character):
+    """
+    Represents the player character.
+    """
+    def __init__(self, name="Player", x=0, y=0, z=0):
+        super().__init__(name=name, x=x, y=y, z=z, health=100, speed=5, mana=100)
+        self.inventory = []
+        self.level = 1
+        self.experience = 0
+        self.max_health = 100
+        self.mana = 100
+        self.max_mana = 100
+        self.mana_regeneration_rate = 1.5  # Mana per second
+        self.strength = 10
+        self.dexterity = 10
+        self.intelligence = 10
+        self.equipment = Equipment(owner=self)
+        # Ginga-related attributes
+        self.flow_meter = 0
+        self.max_flow = 100
+        self.still_point_regen = 3
+        self.has_counter_buff = False
+        self.counter_duration = 0
         This method is called by the game engine when the player examines
         the object.
 
@@ -207,6 +272,57 @@ class Weapon(Item):
     def __str__(self):
         """Provides a formatted string showing the weapon's stats.
 
+    def update(self, delta_time):
+        """
+        Called every frame. Used here to manage Flow Meter regeneration and mana.
+        delta_time is the time passed since the last frame (in seconds).
+        """
+        # The super().update() call was removed as Character does not have a base update method.
+        # If Character's update method is implemented later, this can be restored.
+        self.update_status_effects(delta_time)
+
+        # Mana Regeneration
+        self.mana += self.mana_regeneration_rate * delta_time
+        if self.mana > self.max_mana:
+            self.mana = self.max_mana
+
+        # --- Flow Meter Regeneration Logic ---
+        regen_rate = 1
+        is_at_still_point = True # Placeholder for actual movement check
+        if is_at_still_point:
+             regen_rate = self.still_point_regen
+
+        self.flow_meter += regen_rate * delta_time
+        self.flow_meter = min(self.flow_meter, self.max_flow)
+
+        # --- Counter Buff Duration ---
+        if self.has_counter_buff:
+            self.counter_duration -= delta_time
+            if self.counter_duration <= 0:
+                self.has_counter_buff = False
+                self.counter_duration = 0
+                print(f"{self.name}'s Counter Buff has expired.")
+
+    def pickup_item(self, item):
+        """
+        Picks up an item. If it's a consumable and one of the same
+        name already exists, it stacks. Otherwise, it's added as a new item.
+        """
+        if isinstance(item, Consumable):
+            for inventory_item in self.inventory:
+                if inventory_item.name == item.name and isinstance(inventory_item, Consumable):
+                    inventory_item.quantity += 1
+                    print(f"{self.name} picked up another {item.name}. Quantity: {inventory_item.quantity}")
+                    # Make the picked-up object disappear from the world
+                    item.visible = False
+                    item.solid = False
+                    return  # Exit after stacking
+
+        # If no stack was found, or it's not a consumable, add as a new item
+        self.inventory.append(item)
+        item.visible = False
+        item.solid = False
+        print(f"{self.name} picked up {item.name}.")
         Returns:
             str: A string detailing the weapon's name, type, and damage.
         """
@@ -424,11 +540,174 @@ class Enemy(Character):
         if self.distance_to(player) < 1.5:
             self.attack(player)
         else:
+            print(f"'{item.name}' is not an equippable item.")
+
+    def get_total_stats(self):
+        """Calculates the total stat bonuses from all equipped items."""
+        total_damage = self.slots["weapon"].damage if self.slots["weapon"] else 0
+        total_defense = self.slots["armor"].defense if self.slots["armor"] else 0
+        return {"damage": total_damage, "defense": total_defense}
+
+    def display(self):
+        print(f"--- {self.owner.name}'s Equipment ---")
+        for slot, item in self.slots.items():
+            print(f"- {slot.capitalize()}: {'Empty' if not item else item.name}")
+        print("--------------------")
+# --- 2. NEW Dialogue System Classes ---
+
+class DialogueNode:
+    """Represents a single piece of dialogue and potential player choices."""
+    def __init__(self, text, character_name="Narrator", options=None):
+        self.text = text
+        self.character_name = character_name
+        self.options = options if options else {}
+
+    def to_dict(self):
+        return {
+            "text": self.text,
+            "character_name": self.character_name,
+            "options": self.options,
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            text=data.get("text"),
+            character_name=data.get("character_name", "Narrator"),
+            options=data.get("options"),
+        )
+
+class DialogueManager:
+    """Controls the flow of a single conversation."""
+    def __init__(self, start_node_key="start"):
+        self.nodes = {}
+        self.current_node_key = start_node_key
+
+    def add_node(self, key, node):
+        self.nodes[key] = node
+
+    def get_current_node(self):
+        return self.nodes.get(self.current_node_key)
+
+    def select_option(self, choice_index):
+        node = self.get_current_node()
+        if node and node.options:
+            option_keys = list(node.options.values())
+            if 0 <= choice_index < len(option_keys):
+                self.current_node_key = option_keys[choice_index]
+                return True
+        return False
+
+    def to_dict(self):
+        return {
+            "nodes": {key: node.to_dict() for key, node in self.nodes.items()},
+            "current_node_key": self.current_node_key,
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        manager = cls(start_node_key=data.get("current_node_key", "start"))
+        nodes_data = data.get("nodes", {})
+        for key, node_data in nodes_data.items():
+            manager.add_node(key, DialogueNode.from_dict(node_data))
+        return manager
+
+# --- 3. UPDATING THE CHARACTER AND GAME ENGINE ---
+
+class Character(GameObject):
+    def __init__(self, name="Character", x=0, y=0, z=0, health=100, mana=50, speed=1, is_ginga_ready=False, state=None):
+        super().__init__(name=name, symbol='C', x=x, y=y, z=z, health=health, speed=speed, state=state)
+        self.max_health = health
+        self.mana = mana
+        self.is_ginga_ready = is_ginga_ready # New attribute for Yielding
+        self.dialogue = None
+
+    def enter_ginga_stance(self):
+        """Prepares the character for fluid movement by yielding."""
+        self.is_ginga_ready = True
+        print(f"{self.name} enters the Ginga-Stance, embracing the Perpetual Sway.")
+
+    def exit_ginga_stance(self):
+        """Exits the yielding state, returning to normal posture."""
+        self.is_ginga_ready = False
+        print(f"{self.name} returns to a normal posture.")
+
+    def to_dict(self):
+        data = super().to_dict()
+        data.update({
+            "health": self.health,
+            "max_health": self.max_health,
+            "dialogue": self.dialogue.to_dict() if self.dialogue else None,
+        })
+        return data
+
+    @classmethod
+    def from_dict(cls, data):
+        character = cls(
+            name=data.get("name"),
+            x=data.get("x"),
+            y=data.get("y"),
+            health=data.get("health"),
+            state=data.get("state")
+        )
+        character.max_health = data.get("max_health", character.health)
+        dialogue_data = data.get("dialogue")
+        if dialogue_data:
+            character.dialogue = DialogueManager.from_dict(dialogue_data)
+        return character
+
+class Anastasia(Player):
+    """
+    Implementation of Anastasia the Dreamer.
+    Playstyle: Battlefield controller and disruptor.
+    """
+    def __init__(self, name="Anastasia", x=0, y=0, z=0):
+        super().__init__(name=name, x=x, y=y, z=z)
+        self.mana = 150
+        self.max_mana = 150
+        self.health = 100
+        self.max_health = 100
+        self.symbol = '@'
+
+        # Unique Mechanic: The Dream Weave
+        self.max_dream_weave = 100
+        self.dream_weave = 0
+
+        # Lucid Dream State
+        self.is_lucid_dream_active = False
+        self.lucid_dream_duration = 15 # in game ticks/seconds
+        self.lucid_dream_timer = 0
+
+class Reverie(Player):
+    """
+    Represents Reverie, a powerful and unpredictable Mage/Controller.
+    She builds a unique resource, Enigma, by casting spells, which she then
+    unleashes in a powerful, random ultimate attack.
+    """
+
+    def __init__(self, name="Reverie", x=0, y=0, z=0):
+        # Initialize the parent Player class with Reverie's stats
+        super().__init__(name, x, y, z)
+        self.health = 110
+        self.max_health = 110
+        self.mana = 150   # Standard mana pool for her basic spells
+        self.max_mana = 150
+        self.symbol = 'R'
             dx = player.x - self.x
             dy = player.y - self.y
             dist = self.distance_to(player)
             if dist > 0:
                 self.move(round(dx / dist), round(dy / dist))
+
+        # Reverie's unique resource
+        self.enigma = 0
+        self.max_enigma = 100
+
+        # Her elemental spells build Enigma
+        self.spells = {}
+        self.spells["fire_blast"] = {"cost": 30, "damage": 25}
+        self.spells["ice_shard"] = {"cost": 20, "damage": 15}
+        self.spells["lightning_jolt"] = {"cost": 25, "damage": 20}
 
 class Scene:
     """Manages all the game objects and data for a specific game area.
