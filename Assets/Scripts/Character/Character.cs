@@ -38,6 +38,7 @@ public abstract class Character : MonoBehaviour
     public float maxMana = 100f;
     public float maxStamina = 100f;
     public bool isAlive = true;
+    public bool isCorporeal = true;
 
     // Encapsulated health and mana fields
     private float _currentHealth;
@@ -122,10 +123,23 @@ public abstract class Character : MonoBehaviour
 
     /// <summary>
     /// Applies damage to the character and invokes damage/health events.
+    /// Integrates with the ComboManager to apply damage multipliers.
     /// </summary>
     public virtual void TakeDamage(float amount, Character instigator = null)
     {
-        if (!isAlive) return;
+        if (!isAlive || !isCorporeal) return;
+
+        // If there is an instigator, register the attack for combo tracking.
+        if (instigator != null && ComboManager.Instance != null)
+        {
+            ComboManager.Instance.RegisterAttack(instigator);
+            float multiplier = ComboManager.Instance.GetDamageMultiplier(instigator);
+            amount *= multiplier;
+            if (multiplier > 1.0f)
+            {
+                Debug.Log($"Damage multiplied by {multiplier}x!");
+            }
+        }
 
         float damageTaken = Mathf.Max(1f, amount - defense);
         Health -= damageTaken;
