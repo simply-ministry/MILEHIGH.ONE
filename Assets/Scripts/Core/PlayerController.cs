@@ -9,11 +9,23 @@ using UnityEngine;
 [RequireComponent(typeof(CharacterController))]
 [RequireComponent(typeof(AbilitySystem))]
 [RequireComponent(typeof(Interactor))]
+[RequireComponent(typeof(TargetingSystem))]
 public class PlayerController : MonoBehaviour
 {
     [Header("Movement Settings")]
     [Tooltip("The speed at which the character moves.")]
     public float movementSpeed = 5.0f;
+    [Tooltip("The speed at which the character moves while sprinting.")]
+    public float sprintSpeed = 8.0f;
+    [Tooltip("The amount of stamina consumed per second while sprinting.")]
+    public float sprintStaminaCost = 15f;
+
+
+    [Header("Stamina Regeneration")]
+    [Tooltip("The rate at which stamina regenerates per second.")]
+    public float staminaRegenRate = 10f;
+    [Tooltip("The delay in seconds after using stamina before it starts regenerating.")]
+    public float staminaRegenDelay = 2.0f;
 
     [Header("References")]
     [Tooltip("The main camera used for calculating movement direction. If not set, it will be found automatically.")]
@@ -23,11 +35,18 @@ public class PlayerController : MonoBehaviour
     [Tooltip("The currently selected target for abilities.")]
     public Character CurrentTarget { get; private set; }
 
+    // Public method to allow other systems (like TargetingSystem) to set the target.
+    public void SetTarget(Character newTarget)
+    {
+        CurrentTarget = newTarget;
+    }
+
     // Component references
     private CharacterController characterController;
     private Character character;
     private AbilitySystem abilitySystem;
     private Interactor interactor;
+    private TargetingSystem targetingSystem;
 
     void Awake()
     {
@@ -36,6 +55,7 @@ public class PlayerController : MonoBehaviour
         character = GetComponent<Character>();
         abilitySystem = GetComponent<AbilitySystem>();
         interactor = GetComponent<Interactor>();
+        targetingSystem = GetComponent<TargetingSystem>();
 
         if (Camera.main != null)
         {
@@ -62,10 +82,13 @@ public class PlayerController : MonoBehaviour
         {
             // If not in combat, handle world exploration inputs.
             HandleMovement();
+            HandleStaminaRegen();
             interactor.CheckForInteractable(); // Let the interactor look for things.
             HandleInteractionInput();
         }
     }
+
+    private float lastStaminaUseTime;
 
     private void HandleMovement()
     {
@@ -75,7 +98,21 @@ public class PlayerController : MonoBehaviour
         Vector3 cameraForward = Vector3.Scale(cameraTransform.forward, new Vector3(1, 0, 1)).normalized;
         Vector3 movementDirection = (cameraForward * verticalInput + cameraTransform.right * horizontalInput).normalized;
 
-        Vector3 moveVector = movementDirection * movementSpeed;
+        bool isSprinting = Input.GetKey(KeyCode.LeftShift);
+        float currentSpeed = movementSpeed;
+
+        // Check if the player is trying to sprint and has enough stamina.
+        if (isSprinting && movementDirection != Vector3.zero && character.Stamina > 0)
+        {
+            // Attempt to use stamina for sprinting.
+            if (character.UseStamina(sprintStaminaCost * Time.deltaTime))
+            {
+                currentSpeed = sprintSpeed;
+                lastStaminaUseTime = Time.time; // Record the time stamina was used.
+            }
+        }
+
+        Vector3 moveVector = movementDirection * currentSpeed;
 
         if (!characterController.isGrounded)
         {
@@ -83,6 +120,15 @@ public class PlayerController : MonoBehaviour
         }
 
         characterController.Move(moveVector * Time.deltaTime);
+    }
+
+    private void HandleStaminaRegen()
+    {
+        // Check if enough time has passed since the last stamina use to start regenerating.
+        if (Time.time > lastStaminaUseTime + staminaRegenDelay)
+        {
+            character.RestoreStamina(staminaRegenRate * Time.deltaTime);
+        }
     }
 
     /// <summary>
@@ -98,26 +144,13 @@ public class PlayerController : MonoBehaviour
     }
 
     /// <summary>
-    /// Handles selecting a target with the mouse (now on right-click).
+    /// Handles cycling through targets using the Tab key.
     /// </summary>
     private void HandleTargetSelection()
     {
-        if (Input.GetMouseButtonDown(1)) // Right-click to target
+        if (Input.GetKeyDown(KeyCode.Tab))
         {
-            RaycastHit hit;
-            Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-            if (Physics.Raycast(ray, out hit))
-            {
-                if (hit.collider.CompareTag("Enemy") || hit.collider.CompareTag("Player"))
-                {
-                    Character targetCharacter = hit.collider.GetComponent<Character>();
-                    if (targetCharacter != null)
-                    {
-                        CurrentTarget = targetCharacter;
-                        Debug.Log($"Target set to: {CurrentTarget.characterName}");
-                    }
-                }
-            }
+            targetingSystem.CycleTarget();
         }
     }
 
